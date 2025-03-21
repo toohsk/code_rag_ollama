@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "ollama-gradio-interface"
+name = "code-rag-ollama"
 version = "0.1.0"
-description = "A Gradio interface for Ollama language models"
+description = "A RAG application with Gradio interface for answering code-related questions using Ollama"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
 
@@ -10,6 +10,12 @@ python = "^3.8"
 gradio = "^4.0.0"
 requests = "^2.28.0"
 python-dotenv = "^1.0.0"
+langchain = "^0.1.0"
+langchain-community = "^0.0.13"
+faiss-cpu = "^1.7.4"
+sentence-transformers = "^2.2.2"
+pygments = "^2.16.1"
+unstructured = "^0.10.30"
 
 [build-system]
 requires = ["poetry-core"]

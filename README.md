@@ -1,6 +1,6 @@
-# Ollama Chat Interface with Gradio
+# Code RAG with Ollama
 
-This application provides a web interface for interacting with Ollama language models using Gradio.
+This application provides a Retrieval-Augmented Generation (RAG) system for code repositories using Ollama language models and Gradio. It allows you to load a local code repository, index it, and then ask questions about the code.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ This application provides a web interface for interacting with Ollama language m
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install gradio requests python-dotenv
+pip install gradio requests python-dotenv langchain langchain-community faiss-cpu sentence-transformers pygments unstructured
 ```
 
 2. Make sure Ollama is running:
@@ -40,16 +40,41 @@ python app.py
 
 2. Open your browser and navigate to the URL shown in the terminal (typically http://127.0.0.1:7860)
 
-3. Select a model from the dropdown, adjust parameters if needed, and start chatting!
+3. Load a code repository:
+   - Go to the "Repository Loader" tab
+   - Enter the full path to your repository or select from common directories
+   - Click "Browse Repositories" to see available repositories in the selected directory
+   - Select a repository from the dropdown (if available)
+   - Click "Load Repository" to index the code
+
+4. Ask questions about the code:
+   - Go to the "Code Q&A" tab
+   - Type your question in the input box
+   - View the answer and the relevant code snippets that were used to generate the answer
 
 ## Features
 
-- Chat with any model available in your Ollama installation
-- Adjust temperature and max tokens for response generation
+- Load and index local code repositories
+- Browse available repositories in common directories
+- Ask questions about code and get contextual answers
+- View relevant code snippets used to generate answers
+- Adjust model parameters (temperature, max tokens)
+- Support for multiple programming languages
 - Clear conversation history with a single click
+
+## Supported File Types
+
+The application supports a wide range of file extensions including:
+
+- Python (.py)
+- JavaScript/TypeScript (.js, .jsx, .ts, .tsx)
+- Java (.java)
+- C/C++ (.c, .cpp, .h, .hpp)
+- And many more (see the CODE_EXTENSIONS list in the code)
 
 ## Troubleshooting
 
 - If no models appear in the dropdown, ensure Ollama is running and accessible
 - Check that you have at least one model pulled in Ollama (`ollama list`)
 - To pull a model: `ollama pull modelname`
+- If you encounter memory issues when loading large repositories, try using a smaller repository or adjust the chunk size in the code

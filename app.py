@@ -1,8 +1,22 @@
 import os
 import json
+import shutil
+import tempfile
 import requests
 import gradio as gr
 from dotenv import load_dotenv
+from pathlib import Path
+import concurrent.futures
+import time
+
+# LangChain imports
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.document_loaders import TextLoader, DirectoryLoader
+from langchain.schema import Document
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema.runnable import RunnablePassthrough
 
 # Load environment variables
 load_dotenv()
@@ -10,20 +24,70 @@ load_dotenv()
 # Ollama API endpoint
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
 
+# Global variable to store the vector store
+vector_store = None
+repo_path = None
+code_files = []
+
+# File extensions to consider as code files
+CODE_EXTENSIONS = [
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".go", ".rb", ".php", ".swift", ".kt", ".rs", ".scala", ".sh",
+    ".html", ".css", ".scss", ".sass", ".less", ".json", ".xml", ".yaml", ".yml",
+    ".md", ".sql", ".graphql", ".proto", ".dart", ".lua", ".r", ".pl", ".ex", ".exs"
+]
+
+# Files and directories to ignore
+IGNORE_PATTERNS = [
+    ".git", "__pycache__", "node_modules", "venv", ".venv", "env", ".env",
+    "dist", "build", ".idea", ".vscode", ".DS_Store", "*.pyc", "*.pyo", "*.pyd",
+    "*.so", "*.dylib", "*.dll", "*.exe", "*.bin", "*.obj", "*.o"
+]
+
 def get_available_models():
-    """Get a list of available models from Ollama"""
-    try:
-        response = requests.get(f"{OLLAMA_API_URL}/api/tags")
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            return [model["name"] for model in models]
-        else:
-            return ["Failed to fetch models"]
-    except Exception as e:
-        return [f"Error: {str(e)}"]
+    """Get a list of available models from Ollama with retry logic"""
+    max_retries = 3
+    retry_delay = 1  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(f"{OLLAMA_API_URL}/api/tags", timeout=5)
+            if response.status_code == 200:
+                models = response.json().get("models", [])
+                model_names = [model["name"] for model in models]
+                if model_names:
+                    print(f"Successfully fetched {len(model_names)} models from Ollama")
+                    return model_names
+                else:
+                    print("No models found in Ollama, returning default models")
+                    return ["llama3", "codellama", "mistral", "deepseek-coder"]  # Default models
+            else:
+                print(f"Error response from Ollama: {response.status_code} - {response.text}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    return ["llama3", "codellama", "mistral", "deepseek-coder"]  # Default models
+        except requests.exceptions.ConnectionError as e:
+            print(f"Connection error to Ollama (attempt {attempt+1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print("Max retries reached, returning default models")
+                return ["llama3", "codellama", "mistral", "deepseek-coder"]  # Default models
+        except Exception as e:
+            print(f"Error fetching models from Ollama: {str(e)}")
+            return ["llama3", "codellama", "mistral", "deepseek-coder"]  # Default models
 
 def generate_response(prompt, model, temperature=0.7, max_tokens=1024):
-    """Generate a response from Ollama"""
+    """Generate a response from Ollama with retry logic"""
+    max_retries = 3
+    retry_delay = 1  # seconds
+    
+    # Validate and prepare the payload
     try:
         payload = {
             "model": model,
@@ -32,55 +96,376 @@ def generate_response(prompt, model, temperature=0.7, max_tokens=1024):
             "max_tokens": int(max_tokens),
             "stream": False
         }
-        
-        response = requests.post(f"{OLLAMA_API_URL}/api/generate", json=payload)
-        
-        if response.status_code == 200:
-            return response.json().get("response", "No response generated")
-        else:
-            return f"Error: {response.status_code} - {response.text}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-def chat_with_ollama(message, history, model, temperature, max_tokens):
-    """Chat with Ollama model and return the response"""
-    # Prepare conversation history in a format Ollama can understand
-    conversation = "\n".join([f"User: {user}\nAssistant: {assistant}" for user, assistant in history])
+    except ValueError as e:
+        return f"Error in parameters: {str(e)}"
     
-    # Add the current message
-    if conversation:
-        conversation += f"\nUser: {message}"
+    # Try to connect to Ollama with retries
+    for attempt in range(max_retries):
+        try:
+            print(f"Sending request to Ollama (attempt {attempt+1}/{max_retries})")
+            response = requests.post(
+                f"{OLLAMA_API_URL}/api/generate", 
+                json=payload,
+                timeout=30  # Longer timeout for generation
+            )
+            
+            if response.status_code == 200:
+                result = response.json().get("response", "No response generated")
+                print(f"Successfully generated response ({len(result)} chars)")
+                return result
+            else:
+                print(f"Error response from Ollama: {response.status_code} - {response.text}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    return f"Error: Unable to generate response after {max_retries} attempts. Status code: {response.status_code}"
+        except requests.exceptions.ConnectionError as e:
+            print(f"Connection error to Ollama (attempt {attempt+1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                return f"Error: Unable to connect to Ollama after {max_retries} attempts. Please make sure Ollama is running at {OLLAMA_API_URL}."
+        except requests.exceptions.Timeout:
+            print(f"Timeout error (attempt {attempt+1}/{max_retries})")
+            if attempt < max_retries - 1:
+                print(f"Retrying with a longer timeout...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                return "Error: Request to Ollama timed out. The model might be too large or the server is overloaded."
+        except Exception as e:
+            print(f"Unexpected error: {str(e)}")
+            return f"Error: {str(e)}"
+
+def is_code_file(file_path):
+    """Check if a file is a code file based on its extension"""
+    return any(file_path.endswith(ext) for ext in CODE_EXTENSIONS)
+
+def should_ignore(path):
+    """Check if a path should be ignored"""
+    path_str = str(path)
+    return any(pattern in path_str for pattern in IGNORE_PATTERNS)
+
+def find_code_files(directory):
+    """Find all code files in a directory recursively"""
+    print(f"Searching for code files in: {directory}")
+    code_files = []
+    for root, dirs, files in os.walk(directory):
+        # Skip ignored directories
+        dirs[:] = [d for d in dirs if not should_ignore(os.path.join(root, d))]
+        
+        for file in files:
+            file_path = os.path.join(root, file)
+            if is_code_file(file_path) and not should_ignore(file_path):
+                code_files.append(file_path)
+    
+    print(f"Found {len(code_files)} code files")
+    return code_files
+
+def load_and_process_code_files(directory):
+    """Load and process code files from a directory"""
+    global code_files
+    code_files = find_code_files(directory)
+    
+    documents = []
+    for file_path in code_files:
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                relative_path = os.path.relpath(file_path, directory)
+                documents.append(Document(
+                    page_content=content,
+                    metadata={"source": relative_path}
+                ))
+        except Exception as e:
+            print(f"Error loading {file_path}: {str(e)}")
+    
+    if len(documents) == 0:
+        print("No documents were loaded. Check file permissions and encoding.")
+    
+    return documents
+
+def create_vector_store(documents):
+    """Create a vector store from documents"""
+    # Split the documents into chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=2000,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = text_splitter.split_documents(documents)
+    
+    # Create embeddings
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    
+    # Create vector store
+    vector_store = FAISS.from_documents(chunks, embeddings)
+    
+    return vector_store
+
+def process_repository(repo_directory, progress=None):
+    """Process a repository and create a vector store"""
+    global vector_store, repo_path
+    repo_path = repo_directory
+    
+    print(f"Processing repository: {repo_directory}")
+    
+    # Load and process code files
+    documents = load_and_process_code_files(repo_directory)
+    
+    print(f"Loaded {len(documents)} documents, creating vector store...")
+    
+    # Create vector store
+    if len(documents) > 0:
+        vector_store = create_vector_store(documents)
+        print("Vector store created successfully")
     else:
-        conversation = f"User: {message}"
+        print("No documents found to create vector store")
+        return "No code files found in the repository. Please check the path and try again."
+    
+    return f"Repository processed successfully. {len(documents)} files indexed."
+
+def get_relevant_code_snippets(query, top_k=5):
+    """Get relevant code snippets for a query"""
+    global vector_store
+    if vector_store is None:
+        return []
+    
+    # Search for relevant documents
+    docs = vector_store.similarity_search(query, k=top_k)
+    
+    # Format the results
+    results = []
+    for i, doc in enumerate(docs):
+        source = doc.metadata.get("source", "Unknown")
+        content = doc.page_content
+        results.append({
+            "source": source,
+            "content": content
+        })
+    
+    return results
+
+def format_code_snippets(snippets):
+    """Format code snippets for display"""
+    if not snippets:
+        return "No relevant code snippets found."
+    
+    formatted_text = ""
+    for i, snippet in enumerate(snippets):
+        formatted_text += f"### File: {snippet['source']}\n\n```\n{snippet['content']}\n```\n\n"
+    
+    return formatted_text
+
+def answer_code_question(question, model, temperature, max_tokens):
+    """Answer a code question using RAG"""
+    global vector_store, repo_path
+    
+    if vector_store is None:
+        return "Please load a repository first."
+    
+    # Get relevant code snippets
+    snippets = get_relevant_code_snippets(question)
+    formatted_snippets = format_code_snippets(snippets)
+    
+    # Create prompt
+    prompt = f"""
+    You are a helpful coding assistant. Use the following code snippets to answer the question.
+    
+    CODE SNIPPETS:
+    {formatted_snippets}
+    
+    QUESTION: {question}
+    
+    Please provide a detailed and accurate answer based on the code snippets. If the information in the snippets is not sufficient to answer the question, say so.
+    """
     
     # Generate response
-    response = generate_response(conversation, model, temperature, max_tokens)
+    response = generate_response(prompt, model, temperature, max_tokens)
     
-    return response
+    return response, formatted_snippets
+
+def list_repositories(directory):
+    """List potential repositories in a directory"""
+    repos = []
+    try:
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path) and not item.startswith('.'):
+                # Check if it has a .git directory or other common repo indicators
+                if os.path.exists(os.path.join(item_path, '.git')) or \
+                   os.path.exists(os.path.join(item_path, 'package.json')) or \
+                   os.path.exists(os.path.join(item_path, 'setup.py')) or \
+                   os.path.exists(os.path.join(item_path, 'Cargo.toml')):
+                    repos.append(item)
+    except Exception as e:
+        print(f"Error listing repositories: {str(e)}")
+    
+    return repos
+
+def check_ollama_server():
+    """Check if the Ollama server is running and return status message"""
+    try:
+        response = requests.get(f"{OLLAMA_API_URL}/api/tags", timeout=2)
+        if response.status_code == 200:
+            return True, "Ollama server is running."
+        else:
+            return False, f"Ollama server returned unexpected status: {response.status_code}"
+    except requests.exceptions.ConnectionError:
+        return False, f"Cannot connect to Ollama server at {OLLAMA_API_URL}. Please make sure it's running."
+    except Exception as e:
+        return False, f"Error checking Ollama server: {str(e)}"
 
 # Create Gradio interface
-with gr.Blocks(title="Ollama Chat Interface") as demo:
-    gr.Markdown("# Ollama Chat Interface")
+with gr.Blocks(title="Code RAG with Ollama") as demo:
+    gr.Markdown("# Code RAG with Ollama")
     
-    with gr.Row():
-        with gr.Column(scale=3):
-            chatbot = gr.Chatbot(height=600)
-            msg = gr.Textbox(label="Message", placeholder="Type your message here...", lines=3)
-            clear = gr.Button("Clear Conversation")
+    # Check Ollama server status
+    server_status, status_message = check_ollama_server()
+    if not server_status:
+        gr.Markdown(f"⚠️ **{status_message}**\n\nTo start Ollama server, run: `ollama serve` in a terminal.")
+    
+    gr.Markdown("Load a local code repository and ask questions about it.")
+    
+    with gr.Tab("Repository Loader"):
+        with gr.Row():
+            with gr.Column(scale=3):
+                repo_path_input = gr.Textbox(label="Repository Path", placeholder="Enter the full path to your repository")
+                common_paths = gr.Dropdown(label="Common Directories", choices=[
+                    "/Users/atsushihara/workspace",
+                    "/Users/atsushihara/projects",
+                    "/Users/atsushihara/Documents"
+                ])
+                
+                def update_repo_path(path):
+                    return path
+                
+                common_paths.change(update_repo_path, common_paths, repo_path_input)
+                
+                with gr.Row():
+                    browse_repos_btn = gr.Button("Browse Repositories")
+                    load_repo_btn = gr.Button("Load Repository", variant="primary")
+                
+                repos_dropdown = gr.Dropdown(label="Available Repositories", visible=False)
+                
+                def browse_repositories(path):
+                    if not path:
+                        return [], gr.Dropdown(visible=False)
+                    
+                    repos = list_repositories(path)
+                    return repos, gr.Dropdown(choices=repos, visible=True)
+                
+                browse_repos_btn.click(browse_repositories, repo_path_input, [repos_dropdown, repos_dropdown])
+                
+                def select_repository(repo_name, base_path):
+                    if not repo_name or not base_path:
+                        return ""
+                    return os.path.join(base_path, repo_name)
+                
+                repos_dropdown.change(select_repository, [repos_dropdown, repo_path_input], repo_path_input)
             
-        with gr.Column(scale=1):
-            models = get_available_models()
-            model_dropdown = gr.Dropdown(choices=models, value=models[0] if models else None, label="Model")
-            temperature = gr.Slider(minimum=0.1, maximum=2.0, value=0.7, step=0.1, label="Temperature")
-            max_tokens = gr.Slider(minimum=64, maximum=4096, value=1024, step=64, label="Max Tokens")
+            with gr.Column(scale=2):
+                repo_info = gr.Markdown("No repository loaded.")
     
-    def respond(message, chat_history, model, temperature, max_tokens):
-        bot_message = chat_with_ollama(message, chat_history, model, temperature, max_tokens)
-        chat_history.append((message, bot_message))
-        return "", chat_history
+    with gr.Tab("Code Q&A"):
+        with gr.Row():
+            with gr.Column(scale=3):
+                chatbot = gr.Chatbot(height=500, type="messages")
+                question_input = gr.Textbox(label="Question", placeholder="Ask a question about the code...")
+                clear_btn = gr.Button("Clear Conversation")
+            
+            with gr.Column(scale=2):
+                code_snippets = gr.Markdown(label="Relevant Code Snippets")
+                models = get_available_models()
+                model_dropdown = gr.Dropdown(
+                    choices=models, 
+                    value=models[0] if models else None, 
+                    label="Model"
+                )
+                temperature = gr.Slider(minimum=0.1, maximum=2.0, value=0.7, step=0.1, label="Temperature")
+                max_tokens = gr.Slider(minimum=64, maximum=4096, value=2048, step=64, label="Max Tokens")
     
-    msg.submit(respond, [msg, chatbot, model_dropdown, temperature, max_tokens], [msg, chatbot])
-    clear.click(lambda: None, None, chatbot, queue=False)
+    # Define functions for the interface
+    def load_repository(repo_path):
+        print(f"Load repository function called with path: {repo_path}")
+        
+        if not repo_path or not os.path.exists(repo_path):
+            print(f"Invalid repository path: {repo_path}")
+            return "Invalid repository path. Please enter a valid path."
+        
+        try:
+            print(f"Repository path exists, processing repository...")
+            # Process repository without progress updates
+            result = process_repository(repo_path)
+            print(f"Process repository returned: {result}")
+            
+            # Get repository info
+            num_files = len(code_files)
+            print(f"Number of code files: {num_files}")
+            
+            file_extensions = {}
+            for file in code_files:
+                ext = os.path.splitext(file)[1]
+                if ext in file_extensions:
+                    file_extensions[ext] += 1
+                else:
+                    file_extensions[ext] = 1
+            
+            # Format repository info
+            info = f"## Repository: {os.path.basename(repo_path)}\n\n"
+            info += f"**Path:** {repo_path}\n\n"
+            info += f"**Files Indexed:** {num_files}\n\n"
+            info += "**File Types:**\n"
+            for ext, count in sorted(file_extensions.items(), key=lambda x: x[1], reverse=True):
+                info += f"- {ext}: {count}\n"
+            
+            print(f"Returning repository info: {info[:100]}...")
+            return info
+        except Exception as e:
+            print(f"Exception in load_repository: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return f"Error loading repository: {str(e)}"
+
+    
+    def ask_question(question, history, model, temperature, max_tokens):
+        if not question.strip():
+            return None, history
+        
+        # Add user message to history
+        history.append({"role": "user", "content": question})
+        
+        # Get answer and code snippets
+        answer, snippets = answer_code_question(question, model, temperature, max_tokens)
+        
+        # Add assistant message to history
+        history.append({"role": "assistant", "content": answer})
+        
+        return "", history, snippets
+    
+    # Connect UI elements to functions
+    load_repo_btn.click(
+        fn=load_repository,
+        inputs=repo_path_input,
+        outputs=repo_info,
+        api_name="load_repository"
+    )
+    question_input.submit(
+        fn=ask_question,
+        inputs=[question_input, chatbot, model_dropdown, temperature, max_tokens],
+        outputs=[question_input, chatbot, code_snippets],
+        api_name="ask_question"
+    )
+    clear_btn.click(
+        fn=lambda: (None, []),
+        inputs=None,
+        outputs=[chatbot, code_snippets],
+        api_name="clear_conversation"
+    )
 
 # Launch the app
 if __name__ == "__main__":
