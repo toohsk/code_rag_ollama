@@ -222,13 +222,15 @@ def create_vector_store(documents):
     
     return vector_store
 
-def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v1.5", progress=None):
-    """Process a repository and create a vector store"""
-    global vector_store, repo_path
+def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v1.5", chunk_size=2000, chunk_overlap=200, top_k=5, progress=None):
+    """Process a repository and create a vector store with configurable parameters"""
+    global vector_store, repo_path, top_k_results
     repo_path = repo_directory
+    top_k_results = top_k
     
     print(f"Processing repository: {repo_directory}")
     print(f"Using embedding model: {embedding_model_name}")
+    print(f"Vector configuration: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, top_k={top_k}")
     
     # Load and process code files
     documents = load_and_process_code_files(repo_directory)
@@ -237,15 +239,15 @@ def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v
     
     # Create vector store
     if len(documents) > 0:
-        # Split the documents into chunks
+        # Split the documents into chunks with user-defined parameters
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2000,
-            chunk_overlap=200,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", " ", ""]
         )
         chunks = text_splitter.split_documents(documents)
         
-        print(f"Split documents into {len(chunks)} chunks")
+        print(f"Split documents into {len(chunks)} chunks using chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
         
         # Create embeddings with the selected model
         try:
@@ -260,20 +262,32 @@ def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v
         print("Building FAISS index...")
         vector_store = FAISS.from_documents(chunks, embeddings)
         print(f"Vector store created with {len(chunks)} chunks")
+        
+        # Return detailed information about the indexing process
+        return f"Repository processed successfully:\n" \
+               f"- {len(documents)} files indexed\n" \
+               f"- {len(chunks)} chunks created\n" \
+               f"- Using {embedding_model_name} embedding model\n" \
+               f"- Chunk size: {chunk_size} characters\n" \
+               f"- Chunk overlap: {chunk_overlap} characters\n" \
+               f"- Will retrieve top {top_k} results per query"
     else:
         print("No documents found to create vector store")
         return "No code files found in the repository. Please check the path and try again."
-    
-    return f"Repository processed successfully. {len(documents)} files indexed."
 
-def get_relevant_code_snippets(query, top_k=5):
-    """Get relevant code snippets for a query"""
-    global vector_store
+
+def get_relevant_code_snippets(query):
+    """Get relevant code snippets for a query using the configured top_k parameter"""
+    global vector_store, top_k_results
     if vector_store is None:
         return []
     
+    # Use the globally configured top_k_results parameter
+    k = top_k_results if top_k_results is not None else 5
+    print(f"Retrieving top {k} code snippets for query: {query}")
+    
     # Search for relevant documents
-    docs = vector_store.similarity_search(query, k=top_k)
+    docs = vector_store.similarity_search(query, k=k)
     
     # Format the results
     results = []
@@ -285,6 +299,7 @@ def get_relevant_code_snippets(query, top_k=5):
             "content": content
         })
     
+    print(f"Retrieved {len(results)} code snippets")
     return results
 
 def format_code_snippets(snippets):
@@ -391,6 +406,33 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                     info="Select the embedding model to use for code retrieval"
                 )
                 
+                # Add vector configuration parameters
+                with gr.Accordion("Vector Configuration", open=False):
+                    chunk_size = gr.Slider(
+                        minimum=500, 
+                        maximum=5000, 
+                        value=2000, 
+                        step=100, 
+                        label="Chunk Size",
+                        info="Size of text chunks in characters. Smaller chunks are more precise but may lose context."
+                    )
+                    chunk_overlap = gr.Slider(
+                        minimum=0, 
+                        maximum=500, 
+                        value=200, 
+                        step=50, 
+                        label="Chunk Overlap",
+                        info="Overlap between chunks in characters. Higher overlap helps maintain context between chunks."
+                    )
+                    top_k_results = gr.Slider(
+                        minimum=1,
+                        maximum=20,
+                        value=5,
+                        step=1,
+                        label="Top K Results",
+                        info="Number of most relevant code snippets to retrieve for each query."
+                    )
+                
                 def update_repo_path(path):
                     return path
                 
@@ -440,9 +482,10 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                 max_tokens = gr.Slider(minimum=64, maximum=4096, value=2048, step=64, label="Max Tokens")
     
     # Define functions for the interface
-    def load_repository(repo_path, embedding_model_name):
+    def load_repository(repo_path, embedding_model_name, chunk_size, chunk_overlap, top_k):
         print(f"Load repository function called with path: {repo_path}")
         print(f"Using embedding model: {embedding_model_name}")
+        print(f"Vector configuration: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, top_k={top_k}")
         
         if not repo_path or not os.path.exists(repo_path):
             print(f"Invalid repository path: {repo_path}")
@@ -450,30 +493,21 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
         
         try:
             print(f"Repository path exists, processing repository...")
-            # Process repository with the selected embedding model
-            result = process_repository(repo_path, embedding_model_name)
+            # Process repository with all the configuration parameters
+            result = process_repository(
+                repo_path, 
+                embedding_model_name, 
+                chunk_size, 
+                chunk_overlap, 
+                top_k
+            )
             print(f"Process repository returned: {result}")
             
-            # Get repository info
-            num_files = len(code_files)
-            print(f"Number of code files: {num_files}")
-            
-            file_extensions = {}
-            for file in code_files:
-                ext = os.path.splitext(file)[1]
-                if ext in file_extensions:
-                    file_extensions[ext] += 1
-                else:
-                    file_extensions[ext] = 1
-            
-            # Format repository info
+            # The result from process_repository now contains all the information we need
+            # Format it as markdown for display
             info = f"## Repository: {os.path.basename(repo_path)}\n\n"
             info += f"**Path:** {repo_path}\n\n"
-            info += f"**Files Indexed:** {num_files}\n\n"
-            info += f"**Embedding Model:** {embedding_model_name}\n\n"
-            info += "**File Types:**\n"
-            for ext, count in sorted(file_extensions.items(), key=lambda x: x[1], reverse=True):
-                info += f"- {ext}: {count}\n"
+            info += result.replace("\n", "\n\n")
             
             print(f"Returning repository info: {info[:100]}...")
             return info
@@ -502,7 +536,7 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
     # Connect UI elements to functions
     load_repo_btn.click(
         fn=load_repository,
-        inputs=[repo_path_input, embedding_model],
+        inputs=[repo_path_input, embedding_model, chunk_size, chunk_overlap, top_k_results],
         outputs=repo_info,
         api_name="load_repository"
     )
