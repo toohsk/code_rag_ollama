@@ -199,20 +199,36 @@ def create_vector_store(documents):
     )
     chunks = text_splitter.split_documents(documents)
     
-    # Create embeddings
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    print(f"Split documents into {len(chunks)} chunks")
+    
+    # Create embeddings with a better model for code understanding
+    # Options include:
+    # - "BAAI/bge-small-en-v1.5" (better quality, still fast)
+    # - "Xenova/code-llama-instruct-7b" (specialized for code)
+    # - "microsoft/codebert-base" (specialized for code)
+    # - "nomic-ai/nomic-embed-text-v1" (high quality general embeddings)
+    try:
+        print("Creating embeddings with improved model...")
+        embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    except Exception as e:
+        print(f"Error loading preferred embedding model: {str(e)}")
+        print("Falling back to default embedding model...")
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     
     # Create vector store
+    print("Building FAISS index...")
     vector_store = FAISS.from_documents(chunks, embeddings)
+    print(f"Vector store created with {len(chunks)} chunks")
     
     return vector_store
 
-def process_repository(repo_directory, progress=None):
+def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v1.5", progress=None):
     """Process a repository and create a vector store"""
     global vector_store, repo_path
     repo_path = repo_directory
     
     print(f"Processing repository: {repo_directory}")
+    print(f"Using embedding model: {embedding_model_name}")
     
     # Load and process code files
     documents = load_and_process_code_files(repo_directory)
@@ -221,8 +237,29 @@ def process_repository(repo_directory, progress=None):
     
     # Create vector store
     if len(documents) > 0:
-        vector_store = create_vector_store(documents)
-        print("Vector store created successfully")
+        # Split the documents into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000,
+            chunk_overlap=200,
+            separators=["\n\n", "\n", " ", ""]
+        )
+        chunks = text_splitter.split_documents(documents)
+        
+        print(f"Split documents into {len(chunks)} chunks")
+        
+        # Create embeddings with the selected model
+        try:
+            print(f"Creating embeddings with model: {embedding_model_name}")
+            embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
+        except Exception as e:
+            print(f"Error loading embedding model {embedding_model_name}: {str(e)}")
+            print("Falling back to default embedding model...")
+            embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        
+        # Create vector store
+        print("Building FAISS index...")
+        vector_store = FAISS.from_documents(chunks, embeddings)
+        print(f"Vector store created with {len(chunks)} chunks")
     else:
         print("No documents found to create vector store")
         return "No code files found in the repository. Please check the path and try again."
@@ -341,6 +378,19 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                     "/Users/atsushihara/Documents"
                 ])
                 
+                # Add embedding model selection
+                embedding_model = gr.Dropdown(
+                    label="Embedding Model",
+                    choices=[
+                        "BAAI/bge-small-en-v1.5",  # Better quality, still fast
+                        "all-MiniLM-L6-v2",      # Default, fast but less accurate
+                        "microsoft/codebert-base", # Specialized for code
+                        "nomic-ai/nomic-embed-text-v1" # High quality general embeddings
+                    ],
+                    value="BAAI/bge-small-en-v1.5",
+                    info="Select the embedding model to use for code retrieval"
+                )
+                
                 def update_repo_path(path):
                     return path
                 
@@ -390,8 +440,9 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                 max_tokens = gr.Slider(minimum=64, maximum=4096, value=2048, step=64, label="Max Tokens")
     
     # Define functions for the interface
-    def load_repository(repo_path):
+    def load_repository(repo_path, embedding_model_name):
         print(f"Load repository function called with path: {repo_path}")
+        print(f"Using embedding model: {embedding_model_name}")
         
         if not repo_path or not os.path.exists(repo_path):
             print(f"Invalid repository path: {repo_path}")
@@ -399,8 +450,8 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
         
         try:
             print(f"Repository path exists, processing repository...")
-            # Process repository without progress updates
-            result = process_repository(repo_path)
+            # Process repository with the selected embedding model
+            result = process_repository(repo_path, embedding_model_name)
             print(f"Process repository returned: {result}")
             
             # Get repository info
@@ -419,6 +470,7 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
             info = f"## Repository: {os.path.basename(repo_path)}\n\n"
             info += f"**Path:** {repo_path}\n\n"
             info += f"**Files Indexed:** {num_files}\n\n"
+            info += f"**Embedding Model:** {embedding_model_name}\n\n"
             info += "**File Types:**\n"
             for ext, count in sorted(file_extensions.items(), key=lambda x: x[1], reverse=True):
                 info += f"- {ext}: {count}\n"
@@ -450,7 +502,7 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
     # Connect UI elements to functions
     load_repo_btn.click(
         fn=load_repository,
-        inputs=repo_path_input,
+        inputs=[repo_path_input, embedding_model],
         outputs=repo_info,
         api_name="load_repository"
     )
