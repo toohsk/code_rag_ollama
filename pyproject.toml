@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "ollama-gradio-interface"
+version = "0.1.0"
+description = "A Gradio interface for Ollama language models"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+gradio = "^4.0.0"
+requests = "^2.28.0"
+python-dotenv = "^1.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
