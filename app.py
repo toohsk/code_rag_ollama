@@ -222,7 +222,110 @@ def create_vector_store(documents):
     
     return vector_store
 
-def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v1.5", chunk_size=2000, chunk_overlap=200, top_k=5, progress=None):
+def analyze_codebase_for_optimal_params(documents):
+    """Analyze codebase to determine optimal vector store parameters"""
+    print("Analyzing codebase for optimal parameters...")
+    
+    # Calculate statistics about the codebase
+    total_files = len(documents)
+    total_chars = sum(len(doc.page_content) for doc in documents)
+    avg_file_size = total_chars / total_files if total_files > 0 else 0
+    max_file_size = max(len(doc.page_content) for doc in documents) if documents else 0
+    min_file_size = min(len(doc.page_content) for doc in documents) if documents else 0
+    
+    # Count code lines and comments
+    total_lines = 0
+    comment_lines = 0
+    code_lines = 0
+    for doc in documents:
+        lines = doc.page_content.split('\n')
+        total_lines += len(lines)
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('#') or line.startswith('//') or line.startswith('/*') or line.startswith('*'):
+                comment_lines += 1
+            elif line and not line.startswith('"""') and not line.startswith("'''"):
+                code_lines += 1
+    
+    # Count file types
+    file_extensions = {}
+    for file_path in code_files:
+        ext = os.path.splitext(file_path)[1]
+        if ext in file_extensions:
+            file_extensions[ext] += 1
+        else:
+            file_extensions[ext] = 1
+    
+    # Determine if it's mostly code or documentation
+    doc_ratio = comment_lines / total_lines if total_lines > 0 else 0
+    is_doc_heavy = doc_ratio > 0.3  # If more than 30% is comments/docs
+    
+    # Determine language complexity based on file extensions
+    complex_langs = ['.py', '.java', '.cpp', '.js', '.ts', '.go', '.rs']
+    simple_langs = ['.html', '.css', '.md', '.txt', '.json', '.yaml', '.yml']
+    
+    complex_files = sum(file_extensions.get(ext, 0) for ext in complex_langs)
+    simple_files = sum(file_extensions.get(ext, 0) for ext in simple_langs)
+    
+    is_complex_codebase = complex_files > simple_files
+    
+    # Determine optimal parameters based on analysis
+    if is_doc_heavy:
+        # Documentation-heavy codebases benefit from larger chunks
+        optimal_chunk_size = min(3500, max(1500, int(avg_file_size / 3)))
+        optimal_chunk_overlap = min(400, max(150, int(optimal_chunk_size / 5)))
+    elif is_complex_codebase:
+        # Complex code benefits from smaller chunks for precision
+        optimal_chunk_size = min(2000, max(1000, int(avg_file_size / 5)))
+        optimal_chunk_overlap = min(300, max(100, int(optimal_chunk_size / 4)))
+    else:
+        # Balanced approach for mixed codebases
+        optimal_chunk_size = min(2500, max(1200, int(avg_file_size / 4)))
+        optimal_chunk_overlap = min(350, max(120, int(optimal_chunk_size / 5)))
+    
+    # Determine optimal top_k based on codebase size
+    if total_files < 10:
+        optimal_top_k = 3
+    elif total_files < 50:
+        optimal_top_k = 5
+    elif total_files < 200:
+        optimal_top_k = 8
+    else:
+        optimal_top_k = 10
+    
+    # Ensure parameters are within valid ranges
+    optimal_chunk_size = max(500, min(5000, optimal_chunk_size))
+    optimal_chunk_overlap = max(0, min(500, optimal_chunk_overlap))
+    optimal_top_k = max(1, min(20, optimal_top_k))
+    
+    print(f"Analysis complete. Optimal parameters determined:")
+    print(f"- Chunk Size: {optimal_chunk_size}")
+    print(f"- Chunk Overlap: {optimal_chunk_overlap}")
+    print(f"- Top K Results: {optimal_top_k}")
+    
+    # Return analysis results and optimal parameters
+    return {
+        "chunk_size": optimal_chunk_size,
+        "chunk_overlap": optimal_chunk_overlap,
+        "top_k": optimal_top_k,
+        "analysis": {
+            "total_files": total_files,
+            "total_chars": total_chars,
+            "avg_file_size": avg_file_size,
+            "max_file_size": max_file_size,
+            "min_file_size": min_file_size,
+            "total_lines": total_lines,
+            "comment_lines": comment_lines,
+            "code_lines": code_lines,
+            "doc_ratio": doc_ratio,
+            "is_doc_heavy": is_doc_heavy,
+            "is_complex_codebase": is_complex_codebase,
+            "file_extensions": file_extensions
+        }
+    }
+
+def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v1.5", chunk_size=2000, chunk_overlap=200, top_k=5, auto_tune=False, progress=None):
     """Process a repository and create a vector store with configurable parameters"""
     global vector_store, repo_path, top_k_results
     repo_path = repo_directory
@@ -230,12 +333,24 @@ def process_repository(repo_directory, embedding_model_name="BAAI/bge-small-en-v
     
     print(f"Processing repository: {repo_directory}")
     print(f"Using embedding model: {embedding_model_name}")
-    print(f"Vector configuration: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, top_k={top_k}")
     
     # Load and process code files
     documents = load_and_process_code_files(repo_directory)
     
     print(f"Loaded {len(documents)} documents, creating vector store...")
+    
+    # If auto-tune is enabled, analyze the codebase to determine optimal parameters
+    if auto_tune and documents:
+        print("Auto-tuning enabled, analyzing codebase...")
+        optimal_params = analyze_codebase_for_optimal_params(documents)
+        chunk_size = optimal_params["chunk_size"]
+        chunk_overlap = optimal_params["chunk_overlap"]
+        top_k = optimal_params["top_k"]
+        top_k_results = top_k
+        
+        print(f"Using auto-tuned parameters: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, top_k={top_k}")
+    else:
+        print(f"Using manual parameters: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, top_k={top_k}")
     
     # Create vector store
     if len(documents) > 0:
@@ -408,30 +523,93 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                 
                 # Add vector configuration parameters
                 with gr.Accordion("Vector Configuration", open=False):
-                    chunk_size = gr.Slider(
-                        minimum=500, 
-                        maximum=5000, 
-                        value=2000, 
-                        step=100, 
-                        label="Chunk Size",
-                        info="Size of text chunks in characters. Smaller chunks are more precise but may lose context."
-                    )
-                    chunk_overlap = gr.Slider(
-                        minimum=0, 
-                        maximum=500, 
-                        value=200, 
-                        step=50, 
-                        label="Chunk Overlap",
-                        info="Overlap between chunks in characters. Higher overlap helps maintain context between chunks."
-                    )
-                    top_k_results = gr.Slider(
-                        minimum=1,
-                        maximum=20,
-                        value=5,
-                        step=1,
-                        label="Top K Results",
-                        info="Number of most relevant code snippets to retrieve for each query."
-                    )
+                    with gr.Row():
+                        auto_tune = gr.Checkbox(
+                            label="Auto-tune Parameters", 
+                            value=False,
+                            info="Automatically detect optimal parameters based on your codebase"
+                        )
+                        auto_tune_btn = gr.Button("Analyze & Tune", visible=False)
+                    
+                    with gr.Group(visible=True) as manual_params:
+                        chunk_size = gr.Slider(
+                            minimum=500, 
+                            maximum=5000, 
+                            value=2000, 
+                            step=100, 
+                            label="Chunk Size",
+                            info="Size of text chunks in characters. Smaller chunks are more precise but may lose context."
+                        )
+                        chunk_overlap = gr.Slider(
+                            minimum=0, 
+                            maximum=500, 
+                            value=200, 
+                            step=50, 
+                            label="Chunk Overlap",
+                            info="Overlap between chunks in characters. Higher overlap helps maintain context between chunks."
+                        )
+                        top_k_results = gr.Slider(
+                            minimum=1,
+                            maximum=20,
+                            value=5,
+                            step=1,
+                            label="Top K Results",
+                            info="Number of most relevant code snippets to retrieve for each query."
+                        )
+                    
+                    # Function to toggle auto-tune button visibility
+                    def toggle_auto_tune(checked):
+                        return gr.Button(visible=checked), gr.Group(visible=not checked)
+                    
+                    # Function to analyze codebase and update UI with optimal parameters
+                    def analyze_codebase(repo_path):
+                        if not repo_path or not os.path.exists(repo_path):
+                            return "Invalid repository path. Please enter a valid path.", None, None, None
+                        
+                        print(f"Analyzing codebase at: {repo_path}")
+                        try:
+                            # Load documents without creating vector store
+                            documents = load_and_process_code_files(repo_path)
+                            
+                            if not documents:
+                                return "No documents found in the repository. Please check the path.", None, None, None
+                            
+                            # Analyze codebase to determine optimal parameters
+                            optimal_params = analyze_codebase_for_optimal_params(documents)
+                            
+                            # Format analysis results
+                            analysis = optimal_params["analysis"]
+                            result = f"## Codebase Analysis Results\n\n"
+                            result += f"**Repository:** {os.path.basename(repo_path)}\n\n"
+                            result += f"**Files Analyzed:** {analysis['total_files']}\n\n"
+                            result += f"**Total Lines:** {analysis['total_lines']}\n\n"
+                            result += f"**Code/Comment Ratio:** {(1-analysis['doc_ratio']):.2f} / {analysis['doc_ratio']:.2f}\n\n"
+                            
+                            result += f"**Optimal Parameters Detected:**\n\n"
+                            result += f"- Chunk Size: **{optimal_params['chunk_size']}**\n\n"
+                            result += f"- Chunk Overlap: **{optimal_params['chunk_overlap']}**\n\n"
+                            result += f"- Top K Results: **{optimal_params['top_k']}**\n\n"
+                            
+                            result += f"**Codebase Characteristics:**\n\n"
+                            result += f"- {'Documentation-heavy' if analysis['is_doc_heavy'] else 'Code-heavy'} codebase\n\n"
+                            result += f"- {'Complex' if analysis['is_complex_codebase'] else 'Simple'} language mix\n\n"
+                            
+                            result += f"**File Types:**\n\n"
+                            for ext, count in sorted(analysis['file_extensions'].items(), key=lambda x: x[1], reverse=True)[:10]:
+                                result += f"- {ext}: {count}\n\n"
+                            
+                            # Return the analysis result and optimal parameters
+                            return result, optimal_params['chunk_size'], optimal_params['chunk_overlap'], optimal_params['top_k']
+                            
+                        except Exception as e:
+                            print(f"Error analyzing codebase: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                            return f"Error analyzing codebase: {str(e)}", None, None, None
+                    
+                    auto_tune.change(toggle_auto_tune, auto_tune, [auto_tune_btn, manual_params])
+                    # We need to move this after repo_info is defined
+                    # Will connect it later
                 
                 def update_repo_path(path):
                     return path
@@ -462,6 +640,13 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
             
             with gr.Column(scale=2):
                 repo_info = gr.Markdown("No repository loaded.")
+                
+                # Now connect the auto-tune button after repo_info is defined
+                auto_tune_btn.click(
+                    fn=analyze_codebase,
+                    inputs=repo_path_input,
+                    outputs=[repo_info, chunk_size, chunk_overlap, top_k_results]
+                )
     
     with gr.Tab("Code Q&A"):
         with gr.Row():
@@ -482,10 +667,12 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                 max_tokens = gr.Slider(minimum=64, maximum=4096, value=2048, step=64, label="Max Tokens")
     
     # Define functions for the interface
-    def load_repository(repo_path, embedding_model_name, chunk_size, chunk_overlap, top_k):
+    def load_repository(repo_path, embedding_model_name, chunk_size, chunk_overlap, top_k, auto_tune=False):
         print(f"Load repository function called with path: {repo_path}")
         print(f"Using embedding model: {embedding_model_name}")
-        print(f"Vector configuration: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, top_k={top_k}")
+        print(f"Auto-tune: {auto_tune}")
+        if not auto_tune:
+            print(f"Vector configuration: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, top_k={top_k}")
         
         if not repo_path or not os.path.exists(repo_path):
             print(f"Invalid repository path: {repo_path}")
@@ -499,7 +686,8 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                 embedding_model_name, 
                 chunk_size, 
                 chunk_overlap, 
-                top_k
+                top_k,
+                auto_tune
             )
             print(f"Process repository returned: {result}")
             
@@ -507,6 +695,10 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
             # Format it as markdown for display
             info = f"## Repository: {os.path.basename(repo_path)}\n\n"
             info += f"**Path:** {repo_path}\n\n"
+            
+            if auto_tune:
+                info += "**Auto-tuning:** Enabled - Parameters were automatically optimized for this codebase\n\n"
+            
             info += result.replace("\n", "\n\n")
             
             print(f"Returning repository info: {info[:100]}...")
@@ -536,7 +728,7 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
     # Connect UI elements to functions
     load_repo_btn.click(
         fn=load_repository,
-        inputs=[repo_path_input, embedding_model, chunk_size, chunk_overlap, top_k_results],
+        inputs=[repo_path_input, embedding_model, chunk_size, chunk_overlap, top_k_results, auto_tune],
         outputs=repo_info,
         api_name="load_repository"
     )
