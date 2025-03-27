@@ -501,12 +501,19 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
     with gr.Tab("Repository Loader"):
         with gr.Row():
             with gr.Column(scale=3):
+                # Simple path selection
+                common_paths = gr.Dropdown(
+                    label="Common Folders", 
+                    choices=[
+                        os.path.expanduser("~"),  # Home directory
+                        os.path.expanduser("~/git"),
+                        os.path.expanduser("~/workspace"),
+                        os.path.expanduser("~/repository")
+                    ]
+                )
+                
+                # Repository path input
                 repo_path_input = gr.Textbox(label="Repository Path", placeholder="Enter the full path to your repository")
-                common_paths = gr.Dropdown(label="Common Directories", choices=[
-                    "/Users/atsushihara/workspace",
-                    "/Users/atsushihara/projects",
-                    "/Users/atsushihara/Documents"
-                ])
                 
                 # Add embedding model selection
                 embedding_model = gr.Dropdown(
@@ -612,31 +619,22 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                     # Will connect it later
                 
                 def update_repo_path(path):
+                    # Simply return the selected path
                     return path
                 
                 common_paths.change(update_repo_path, common_paths, repo_path_input)
                 
                 with gr.Row():
-                    browse_repos_btn = gr.Button("Browse Repositories")
                     load_repo_btn = gr.Button("Load Repository", variant="primary")
                 
-                repos_dropdown = gr.Dropdown(label="Available Repositories", visible=False)
+                # Simple function to update repository path when selecting from dropdown
+                def update_repo_path(selected_path):
+                    if selected_path:
+                        return selected_path
+                    return ""
                 
-                def browse_repositories(path):
-                    if not path:
-                        return [], gr.Dropdown(visible=False)
-                    
-                    repos = list_repositories(path)
-                    return repos, gr.Dropdown(choices=repos, visible=True)
-                
-                browse_repos_btn.click(browse_repositories, repo_path_input, [repos_dropdown, repos_dropdown])
-                
-                def select_repository(repo_name, base_path):
-                    if not repo_name or not base_path:
-                        return ""
-                    return os.path.join(base_path, repo_name)
-                
-                repos_dropdown.change(select_repository, [repos_dropdown, repo_path_input], repo_path_input)
+                # Connect the dropdown to update the repository path
+                common_paths.change(update_repo_path, common_paths, repo_path_input)
             
             with gr.Column(scale=2):
                 repo_info = gr.Markdown("No repository loaded.")
