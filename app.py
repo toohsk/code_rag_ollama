@@ -654,7 +654,6 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                 clear_btn = gr.Button("Clear Conversation")
             
             with gr.Column(scale=2):
-                code_snippets = gr.Markdown(label="Relevant Code Snippets")
                 models = get_available_models()
                 model_dropdown = gr.Dropdown(
                     choices=models, 
@@ -663,6 +662,9 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
                 )
                 temperature = gr.Slider(minimum=0.1, maximum=2.0, value=0.7, step=0.1, label="Temperature")
                 max_tokens = gr.Slider(minimum=64, maximum=4096, value=2048, step=64, label="Max Tokens")
+                
+                # Add code snippets display
+                code_snippets = gr.Markdown(label="Relevant Code Snippets")
     
     # Define functions for the interface
     def load_repository(repo_path, embedding_model_name, chunk_size, chunk_overlap, top_k, auto_tune=False):
@@ -737,7 +739,7 @@ with gr.Blocks(title="Code RAG with Ollama") as demo:
         api_name="ask_question"
     )
     clear_btn.click(
-        fn=lambda: (None, []),
+        fn=lambda: ([], ""),
         inputs=None,
         outputs=[chatbot, code_snippets],
         api_name="clear_conversation"
